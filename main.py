@@ -519,9 +519,6 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2️⃣ Диагностика бизнеса
     if "Диагностика бизнеса" in txt or txt == "Пройти диагностику 🚀" or txt == "Начать диагностику 🚀":
-        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
-        if not allowed:
-            return
         await start_diagnostic_session(update.message, st)
         return
 
@@ -1160,11 +1157,6 @@ async def finalize_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE
     st.stage = "diag_complete"
     st.diagnostic_step = 0
 
-    allowed, _ = await ensure_paid_access(update.message, get_user(user.id, user.username), "text")
-    if not allowed:
-        st.stage = "idle"
-        return
-
     await update.message.reply_text("Формирую итоговый отчёт и план…")
     report_text = await make_final_report(user, st, bot=context.bot, chat_id=chat_id)
 
@@ -1286,9 +1278,6 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "start_diag":
-        allowed, _ = await ensure_paid_access(q.message, get_user(user.id, user.username), "text")
-        if not allowed:
-            return
         await start_diagnostic_session(q.message, st)
         return
 
@@ -1298,9 +1287,6 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "get_report":
         # Сформировать итоговый отчёт и показать меню секций
-        allowed, _ = await ensure_paid_access(q.message, get_user(user.id, user.username), "text")
-        if not allowed:
-            return
         txt = await make_final_report(user, st, bot=context.bot, chat_id=chat_id)
         await q.message.reply_text("Готово ✅\nНиже — краткий отчёт и рекомендации.")
         await send_gpt_reply(q.message, st, txt)
