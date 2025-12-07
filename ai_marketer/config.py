@@ -18,17 +18,53 @@ TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
 OPENAI_RETRIES = 3
 LOG_FILE = "logs.jsonl"
 
+TARIFFS = {
+    "start": {
+        "name": "Старт",
+        "price": 2990,
+        "display_price": "2 990 ₽ / мес",
+        "limits": {"text": "24/7 текстовый ИИ", "images": 0, "video": 0, "presentations": 0},
+        "description": (
+            "Только текстовый ИИ-маркетолог 24/7. "
+            "Стратегии, контент-планы, офферы, воронки, тексты постов и рекламы."
+        ),
+    },
+    "marketing_pro": {
+        "name": "Маркетинг-про",
+        "price": 5990,
+        "display_price": "5 990 ₽ / мес",
+        "limits": {"text": "всё из Старт", "images": 50, "video": 0, "presentations": 0},
+        "description": "Всё из тарифа \"Старт\" плюс до 50 генераций изображений (креативы, обложки, баннеры).",
+    },
+    "content_studio": {
+        "name": "Контент-студия",
+        "price": 13990,
+        "display_price": "13 990 ₽ / мес",
+        "limits": {"text": "всё из Маркетинг-про", "images": 80, "video": 15, "presentations": 3},
+        "description": (
+            "Всё из \"Маркетинг-про\" плюс до 80 генераций изображений, до 15 видео-сценариев "
+            "(Reels, Shorts, реклама) и до 3 презентаций (структура + тексты)."
+        ),
+    },
+    "agency": {
+        "name": "Агентство 360",
+        "price": 59990,
+        "display_price": "59 990 ₽ / мес",
+        "limits": {"text": "всё из Контент-студия", "images": 200, "video": 60, "presentations": 10},
+        "description": (
+            "Всё из \"Контент-студия\" плюс до 200 генераций изображений, до 60 видео-сценариев, "
+            "до 10 презентаций и приоритетная поддержка."
+        ),
+    },
+}
+
 SERVICES = [
-    ("AI маркетолог", "2500/мес", "ai_marketer"),
-    ("Пакет на генерацию 25 изображений", "2500 руб", "img_25"),
-    ("Пакет на генерацию 50 изображений", "5000 руб", "img_50"),
-    ("Пакет на генерацию Reels/Shorts до 1 мин 10 шт", "2500 руб", "reels_10"),
-    ("Пакет 10 шт. на генерацию видео до 3 мин с Аватаром", "2500 руб", "video_avatar_10"),
-    ("Пакет на генерацию презентации (до 20 слайдов)", "1000 руб/преза", "presentation"),
+    (f"{data['name']} — {data['display_price']}", data["display_price"], code)
+    for code, data in TARIFFS.items()
 ]
 
 SERVICES_TEXT = (
-    "Выбери услугу:\n"
-    + "\n".join([f"• {name} — {price}" for name, price, _ in SERVICES])
-    + "\n\nОплата доступна через ЮKassa по кнопке ниже."
+    "Выбери тариф AI маркетолога 360.\n"
+    + "\n".join([f"• {data['name']} — {data['display_price']}" for data in TARIFFS.values()])
+    + "\n\nОплата доступна через ЮKassa по кнопкам ниже."
 )
