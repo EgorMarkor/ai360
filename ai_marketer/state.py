@@ -13,6 +13,7 @@ class UserState:
     last_report_sections: Dict[str, str] = field(default_factory=dict)
     chat_mode: bool = False
     chat_history: List[Dict[str, str]] = field(default_factory=list)
+    pending_payment_service: Optional[str] = None
 
 
 STATE: Dict[int, UserState] = {}

@@ -468,6 +468,59 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_tariffs(message_obj):
     await message_obj.reply_text(tariff_text_intro(), reply_markup=tariff_buttons())
 
+
+async def send_payment_link(message_obj, user, service_code: str, st: UserState, promo_code: Optional[str] = None):
+    try:
+        payment_result = build_service_payment(service_code, promo_code=promo_code)
+    except Exception as exc:  # noqa: BLE001
+        await message_obj.reply_text(
+            "Не получилось создать счёт в ЮKassa. Напиши менеджеру, мы поможем оформить оплату.",
+            reply_markup=INLINE_CONTACT,
+        )
+        log_event(user.id, f"buy:{service_code}", f"yookassa_error:{exc}", stage="payment")
+        return
+
+    if not payment_result:
+        await message_obj.reply_text(
+            "Оплата пока не активирована. Напиши менеджеру, чтобы получить счёт или оформить заказ вручную.",
+            reply_markup=INLINE_CONTACT,
+        )
+        return
+
+    payment_url, payment_payload = payment_result
+    payment_text = "Готово! Ниже ссылка на оплату через ЮKassa. После оплаты лимиты обновятся автоматически."
+    if promo_code:
+        payment_text = "Промокод принят ✅\n" + payment_text
+
+    payment_keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Оплатить через ЮKassa", url=payment_url)],
+            [InlineKeyboardButton("✅ Я оплатил", callback_data=f"tariff_success_{service_code}")],
+            [InlineKeyboardButton("Написать менеджеру", url="https://t.me/maglena_a")],
+        ]
+    )
+    await message_obj.reply_text(payment_text, reply_markup=payment_keyboard)
+    log_event(user.id, f"buy:{service_code}", json.dumps(payment_payload, ensure_ascii=False), stage="payment")
+    st.stage = "idle"
+    st.pending_payment_service = None
+
+
+async def prompt_promocode(message_obj, service_code: str, st: UserState):
+    st.stage = "await_promo"
+    st.pending_payment_service = service_code
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Оплатить без промокода", callback_data=f"tariff_pay_direct_{service_code}")],
+            [InlineKeyboardButton("Написать менеджеру", url="https://t.me/maglena_a")],
+        ]
+    )
+    text = (
+        "Есть промокод? Пришли его одним сообщением.\n"
+        "Активные промокоды: Стеблев, Шимин — скидка 50%.\n"
+        "Если промокода нет, просто нажми «Оплатить без промокода»."
+    )
+    await message_obj.reply_text(text, reply_markup=keyboard)
+
 # ------------------------------
 # 🧭 ОБРАБОТКА ГЛАВНОГО МЕНЮ (ТЕКСТ)
 # ------------------------------
@@ -492,6 +545,32 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Главное меню:", reply_markup=MAIN_MENU)
         st.chat_mode = False
         st.chat_history = []
+        return
+
+    if st.stage == "await_promo" and st.pending_payment_service:
+        normalized = txt.strip().lower()
+        if normalized in ("нет", "без промокода", "пропустить"):
+            await send_payment_link(update.message, user, st.pending_payment_service, st)
+            return
+
+        if normalized in config.PROMOCODES:
+            await send_payment_link(update.message, user, st.pending_payment_service, st, promo_code=txt.strip())
+            return
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Оплатить без промокода",
+                        callback_data=f"tariff_pay_direct_{st.pending_payment_service}",
+                    )
+                ]
+            ]
+        )
+        await update.message.reply_text(
+            "Не получилось активировать промокод. Проверь написание и попробуй снова или нажми «Оплатить без промокода».",
+            reply_markup=keyboard,
+        )
         return
 
     if txt in ("🛠 Услуги", "Услуги"):
@@ -1195,38 +1274,16 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_split_text(q.message, tariff_description(code), reply_markup=tariff_details_buttons(code))
             return
 
-    if data.startswith("tariff_pay_"):
+    if data.startswith("tariff_pay_") and not data.startswith(("tariff_pay_direct_", "tariff_success_")):
         service_code = data.replace("tariff_pay_", "", 1)
-        try:
-            payment_result = build_service_payment(service_code)
-        except Exception as exc:  # noqa: BLE001
-            await q.message.reply_text(
-                "Не получилось создать счёт в ЮKassa. Напиши менеджеру, мы поможем оформить оплату.",
-                reply_markup=INLINE_CONTACT,
-            )
-            log_event(user.id, f"buy:{service_code}", f"yookassa_error:{exc}", stage="payment")
-            return
+        if service_code in TARIFFS:
+            await prompt_promocode(q.message, service_code, st)
+        return
 
-        if not payment_result:
-            await q.message.reply_text(
-                "Оплата пока не активирована. Напиши менеджеру, чтобы получить счёт или оформить заказ вручную.",
-                reply_markup=INLINE_CONTACT,
-            )
-            return
-
-        payment_url, payment_payload = payment_result
-        payment_keyboard = InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("Оплатить через ЮKassa", url=payment_url)],
-                [InlineKeyboardButton("✅ Я оплатил", callback_data=f"tariff_success_{service_code}")],
-                [InlineKeyboardButton("Написать менеджеру", url="https://t.me/maglena_a")],
-            ]
-        )
-        await q.message.reply_text(
-            "Готово! Ниже ссылка на оплату через ЮKassa. После оплаты лимиты обновятся автоматически.",
-            reply_markup=payment_keyboard,
-        )
-        log_event(user.id, f"buy:{service_code}", json.dumps(payment_payload, ensure_ascii=False), stage="payment")
+    if data.startswith("tariff_pay_direct_"):
+        service_code = data.replace("tariff_pay_direct_", "", 1)
+        if service_code in TARIFFS:
+            await send_payment_link(q.message, user, service_code, st)
         return
 
     if data.startswith("tariff_success_"):
