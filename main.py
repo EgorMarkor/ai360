@@ -54,6 +54,16 @@ from ai_marketer.keyboards import (
 from ai_marketer.logging_utils import log_event
 from ai_marketer.payments import build_service_payment
 from ai_marketer.state import UserState, get_state, reset_state
+from ai_marketer.user_db import (
+    activate_tariff,
+    active_tariff_label,
+    add_prompt_history,
+    check_access,
+    get_user,
+    has_active_subscription,
+    subscription_days_left,
+    register_usage,
+)
 
 # ------------------------------
 # 🔧 ИНИЦИАЛИЗАЦИЯ
@@ -217,18 +227,34 @@ def tariffs_more_info() -> str:
     )
 
 
-def format_success_payment(code: str) -> str:
+def format_success_payment(code: str, user_data: Optional[Dict] = None) -> str:
     data = TARIFFS[code]
-    expires = datetime.now() + timedelta(days=30)
     limits = data["limits"]
     text_limit = limits.get("text", "по тарифу")
     images_limit = limits.get("images", 0)
     video_limit = limits.get("video", 0)
     pres_limit = limits.get("presentations", 0)
+
+    expires_text = "до активации"
+    if user_data:
+        days_left = subscription_days_left(user_data)
+        expires_raw = user_data.get("subscription_expires_at")
+        if expires_raw:
+            try:
+                expires_dt = datetime.strptime(expires_raw, "%Y-%m-%dT%H:%M:%S")
+                expires_text = expires_dt.strftime("%d.%m.%Y")
+            except Exception:
+                expires_text = "уточняется"
+        else:
+            expires_text = f"{days_left} дней"
+    else:
+        expires = datetime.now() + timedelta(days=30)
+        expires_text = expires.strftime("%d.%m.%Y")
+
     return (
         "Оплата прошла успешно ✅\n"
         f"Тариф: {data['name']}\n"
-        f"Срок действия до: {expires.strftime('%d.%m.%Y')}\n\n"
+        f"Срок действия до: {expires_text}\n\n"
         "Доступно:\n"
         f"• Текстовые запросы: {text_limit}\n"
         f"• Генерации изображений: {images_limit}\n"
@@ -236,6 +262,18 @@ def format_success_payment(code: str) -> str:
         f"• Презентации: {pres_limit}\n\n"
         "Можно начинать работу. Выберите раздел в меню и задайте первую задачу ИИ-маркетологу."
     )
+
+
+async def ensure_paid_access(message_obj, user_profile: Dict, category: str):
+    allowed, reason, updated_profile = check_access(
+        user_profile.get("id", 0), category, user_profile.get("username")
+    )
+    if not allowed:
+        await message_obj.reply_text(
+            f"{reason}\n\nТекущий статус: {active_tariff_label(updated_profile)}",
+            reply_markup=tariff_buttons(),
+        )
+    return allowed, updated_profile
 
 # ------------------------------
 # 🗂️ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ
@@ -265,6 +303,12 @@ async def send_gpt_reply(message_obj, st: UserState, answer: str, *, last_user_t
     formatted_answer = format_gpt_answer_for_telegram(answer)
     await send_split_text(message_obj, formatted_answer, parse_mode=parse_mode)
     reset_boltalka_context(st, last_user_text, answer)
+    try:
+        user = getattr(message_obj, "from_user", None)
+        if user:
+            add_prompt_history(user.id, last_user_text or "", answer, username=user.username)
+    except Exception:
+        pass
     await send_boltalka_hint(message_obj)
 
 # ------------------------------
@@ -432,6 +476,7 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     st = get_state(user.id)
     txt = (update.message.text or "").strip()
     chat_id = update.effective_chat.id if update.effective_chat else None
+    user_profile = get_user(user.id, user.username)
 
     user_id = user.id
     log_event(
@@ -459,6 +504,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1️⃣ Протестировать AI-маркетолога
     if "Протестировать AI-маркетолога" in txt:
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         msg = (
             "Демо-режим 🧠\n"
             "Покажу, как нахожу точки роста и формирую гипотезы.\n\n"
@@ -471,6 +519,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2️⃣ Диагностика бизнеса
     if "Диагностика бизнеса" in txt or txt == "Пройти диагностику 🚀" or txt == "Начать диагностику 🚀":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         await start_diagnostic_session(update.message, st)
         return
 
@@ -513,11 +564,17 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "📊 Провести анализ компании":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "quick_analyze"
         await update.message.reply_text("Напиши в одной фразе: что продаёте, кому и через какие каналы сейчас?", reply_markup=back_main_buttons())
         return
 
     if st.stage == "quick_analyze" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Сделай экспресс-анализ компании и 5 точек роста."
             " Формат: 1) Краткое резюме 2) Точки роста 3) Быстрые действия на 7 дней 4) Метрики.\n"
@@ -529,11 +586,17 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "💡 Составить стратегию":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "quick_strategy"
         await update.message.reply_text("Опиши цель на 30–90 дней и бюджет (диапазон).", reply_markup=back_main_buttons())
         return
 
     if st.stage == "quick_strategy" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Составь конспект стратегии на 90 дней: цели, каналы, гипотезы, вехи по неделям, риски, метрики."
             f" Дано: {txt}"
@@ -544,11 +607,17 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "🧩 Создать контент-план":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "quick_cplan"
         await update.message.reply_text("Ниша и ключевой продукт? Укажи площадку (TG/IG/ВК/YouTube).", reply_markup=back_main_buttons())
         return
 
     if st.stage == "quick_cplan" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Составь контент-план на 2 недели: 14 постов/роликов с идеей, тезисами, CTA и метрикой."
             f" Дано: {txt}"
@@ -559,11 +628,17 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "📈 Подобрать каналы трафика":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "quick_channels"
         await update.message.reply_text("Кто ЦА и какой средний чек?", reply_markup=back_main_buttons())
         return
 
     if st.stage == "quick_channels" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Подбери 5 каналов трафика с обоснованием, старт-бюджетом, первыми шагами и основными рисками."
             f" Дано: {txt}"
@@ -574,6 +649,9 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "⚙️ Внедрить AI для автоматизации":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Дай дорожную карту внедрения AI в SMB: контент, продажи, поддержка, аналитика, алерты, интеграции."
             " Формат: этапы (2 недели, 30 дней, 60 дней), инструменты, метрики, риски."
@@ -588,24 +666,34 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "Создать изображение 🖼️":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "images")
+        if not allowed:
+            return
         st.stage = "gen_image"
         await update.message.reply_text(
-            "Опиши задачу: продукт/услуга, ЦА, эмоция и стиль. Сгенерирую 4 промпта для нейросети и подписи.",
+            "Опиши задачу: продукт/услуга, ЦА, эмоция и стиль. Сгенерирую готовые описания для нейросетей изображений и подписи.",
             reply_markup=back_main_buttons(),
         )
         return
     if st.stage == "gen_image" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "images")
+        if not allowed:
+            return
         prompt = (
-            "Сформируй 4 промпта для генерации изображений (подходит для DALL·E/Midjourney)."
-            " Формат: промпт на английском, краткое описание на русском, идея CTA."
+            "Сгенерируй 4 подробных описания для генерации изображений (Midjourney/DALL·E):"
+            " каждая сцена должна включать ключевые объекты, настроение и композицию, а также подпись с CTA."
             f" Ввод: {txt}"
         )
         ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
         await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        register_usage(user.id, "images", username=user.username)
         st.stage = "idle"
         return
 
     if txt == "Создать Reels/Shorts 🎬":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "video")
+        if not allowed:
+            return
         st.stage = "gen_reels"
         await update.message.reply_text(
             "Укажи нишу/продукт и площадку. Дам 5 сценариев Reels/Shorts с хук-строкой и раскадровкой.",
@@ -613,16 +701,23 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if st.stage == "gen_reels" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "video")
+        if not allowed:
+            return
         prompt = (
             "Сгенерируй 5 сценариев Reels/Shorts: хук, 3-4 шага сюжета, финальный CTA, длительность до 35 сек."
             f" Дано: {txt}"
         )
-        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt, model_type="video")
         await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        register_usage(user.id, "video", username=user.username)
         st.stage = "idle"
         return
 
     if txt == "Создать видео до 3 минут 🎥":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "video")
+        if not allowed:
+            return
         st.stage = "gen_video"
         await update.message.reply_text(
             "Что за продукт и цель ролика? Сценарий будет до 3 минут с репликами и планом съёмок.",
@@ -630,17 +725,24 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if st.stage == "gen_video" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "video")
+        if not allowed:
+            return
         prompt = (
             "Напиши сценарий видео до 3 минут: интро, основной блок в 4-5 сценах, финальный оффер."
             " Добавь таймкоды, визуальные подсказки и текст ведущего."
             f" Дано: {txt}"
         )
-        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt, model_type="video")
         await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        register_usage(user.id, "video", username=user.username)
         st.stage = "idle"
         return
 
     if txt == "Создать презентацию 📑":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "presentations")
+        if not allowed:
+            return
         st.stage = "gen_presentation"
         await update.message.reply_text(
             "Про что презентация и кто аудитория? Дам структуру до 20 слайдов с тезисами.",
@@ -648,35 +750,52 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if st.stage == "gen_presentation" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "presentations")
+        if not allowed:
+            return
         prompt = (
             "Сделай план презентации до 20 слайдов: заголовок, цель, тезисы, CTA."
             " Укажи ключевые цифры/офер, предложи визуальные подсказки и спикер-ноты."
             f" Ввод: {txt}"
         )
-        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt, model_type="presentations")
         await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        register_usage(user.id, "presentations", username=user.username)
         st.stage = "idle"
         return
 
     if txt == "Идеи Reels 🎬":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "video")
+        if not allowed:
+            return
         st.stage = "reels"
         await update.message.reply_text("Опиши продукт/услугу и площадку. Дам 10 идей с хук-строками.", reply_markup=back_main_buttons())
         return
     if st.stage == "reels" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "video")
+        if not allowed:
+            return
         prompt = (
             "Сгенерируй 10 идей Reels/Shorts: хук, сюжет в 3 шага, финальный CTA, хронометраж до 30 сек."
             f" Ввод: {txt}"
         )
-        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt, model_type="video")
         await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        register_usage(user.id, "video", username=user.username)
         st.stage = "idle"
         return
 
     if txt == "Заголовки 🔥":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "titles"
         await update.message.reply_text("Какая тема? Дам 20 заголовков в 4 стилях.", reply_markup=back_main_buttons())
         return
     if st.stage == "titles" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Сгенерируй 20 заголовков: 5 инфо, 5 выгода, 5 триггер, 5 проблематика."
             f" Тема: {txt}"
@@ -687,10 +806,16 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "Посты/описания ✍️":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "posts"
         await update.message.reply_text("Тема/оффер и площадка (TG/IG/ВК/маркетплейс)?", reply_markup=back_main_buttons())
         return
     if st.stage == "posts" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Напиши 3 варианта поста/описания: краткий, подробный, продающий. Добавь CTA и эмодзи."
             f" Тема: {txt}"
@@ -701,10 +826,16 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "Контент-план на 14 дней 🗓️":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "cplan14"
         await update.message.reply_text("Ниша, задача (продажи/охваты/экспертность) и платформа?", reply_markup=back_main_buttons())
         return
     if st.stage == "cplan14" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Сформируй таблицей план на 14 дней: формат, идея, тезисы, CTA, цель метрики."
             f" Ввод: {txt}"
@@ -715,10 +846,16 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if txt == "Тексты для баннеров 📣":
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         st.stage = "banners"
         await update.message.reply_text("Продукт + спецпредложение + ЦА. Дам 8 вариантов УТП в 4 форматах.", reply_markup=back_main_buttons())
         return
     if st.stage == "banners" and txt not in ("⬅️ В главное меню",):
+        allowed, user_profile = await ensure_paid_access(update.message, user_profile, "text")
+        if not allowed:
+            return
         prompt = (
             "Сгенерируй 8 баннерных текстов: короткие (до 6 слов), оффер+боль, срочность, соц.доказательства."
             f" Дано: {txt}"
@@ -926,6 +1063,10 @@ async def handle_demo_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         if st.answers["demo_q"] == 3:
             st.answers["demo_goal"] = txt
             # Генерация идей
+            allowed, _ = await ensure_paid_access(update.message, get_user(user.id, user.username), "text")
+            if not allowed:
+                st.stage = "idle"
+                return
             prompt = (
                 "Сгенерируй 6 быстрых гипотез роста для бизнеса на 30–60 дней, с приоритетами и ожидаемым эффектом.\n"
                 f"Бизнес: {st.answers.get('demo_prod')}\n"
@@ -1019,6 +1160,11 @@ async def finalize_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE
     st.stage = "diag_complete"
     st.diagnostic_step = 0
 
+    allowed, _ = await ensure_paid_access(update.message, get_user(user.id, user.username), "text")
+    if not allowed:
+        st.stage = "idle"
+        return
+
     await update.message.reply_text("Формирую итоговый отчёт и план…")
     report_text = await make_final_report(user, st, bot=context.bot, chat_id=chat_id)
 
@@ -1094,7 +1240,8 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("tariff_success_"):
         code = data.replace("tariff_success_", "", 1)
         if code in TARIFFS:
-            success_text = format_success_payment(code)
+            profile = activate_tariff(user.id, code, username=user.username)
+            success_text = format_success_payment(code, profile)
             success_keyboard = ReplyKeyboardMarkup(
                 [
                     ["🧬AI-Маркетолог", "☄️Генерация контента"],
@@ -1139,6 +1286,9 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "start_diag":
+        allowed, _ = await ensure_paid_access(q.message, get_user(user.id, user.username), "text")
+        if not allowed:
+            return
         await start_diagnostic_session(q.message, st)
         return
 
@@ -1148,6 +1298,9 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "get_report":
         # Сформировать итоговый отчёт и показать меню секций
+        allowed, _ = await ensure_paid_access(q.message, get_user(user.id, user.username), "text")
+        if not allowed:
+            return
         txt = await make_final_report(user, st, bot=context.bot, chat_id=chat_id)
         await q.message.reply_text("Готово ✅\nНиже — краткий отчёт и рекомендации.")
         await send_gpt_reply(q.message, st, txt)
@@ -1161,6 +1314,9 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             " задачи, ответственные роли, метрики успеха, ожидаемый эффект, чек-лист.\n"
             f"Вводные (кратко): {json.dumps(st.answers, ensure_ascii=False)[:1200]}"
         )
+        allowed, _ = await ensure_paid_access(q.message, get_user(user.id, user.username), "text")
+        if not allowed:
+            return
         plan = await ask_gpt_with_typing(context.bot, chat_id, prompt)
         await send_gpt_reply(q.message, st, plan)
         st.stage = "idle"
@@ -1178,6 +1334,9 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "comp_all": "Все разделы вместе"
             }
             section = section_map[data]
+            allowed, _ = await ensure_paid_access(q.message, get_user(user.id, user.username), "text")
+            if not allowed:
+                return
             comp_text = await generate_competitor_review(st, section, bot=context.bot, chat_id=chat_id)
             await send_gpt_reply(q.message, st, comp_text)
         return

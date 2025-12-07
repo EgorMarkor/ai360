@@ -9,17 +9,32 @@ from ai_marketer.logging_utils import log_event
 client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
 
-async def chatgpt_answer(prompt: str, system: Optional[str] = None, temperature: float = config.TEMPERATURE) -> str:
+def _model_for_type(model_type: str) -> str:
+    if model_type == "video":
+        return config.SORA_MODEL
+    if model_type == "presentations":
+        return config.PRESENTATION_MODEL
+    return config.OPENAI_MODEL
+
+
+async def chatgpt_answer(
+    prompt: str,
+    system: Optional[str] = None,
+    temperature: float = config.TEMPERATURE,
+    *,
+    model_type: str = "default",
+) -> str:
     sys_msg = system or (
         "Ты — AI-маркетолог 360° в России в 2025 году, эксперт по стратегиям роста бизнеса, аналитике и автоматизации. "
         "Отвечай чётко, по делу. Анализируй существующую информацию на данный момент по законам РФ и стратегиям, используемых "
         "в РФ и отвечай с их пониманием. Укладывай свой ответ в 4096 символов (русских символов, кириллица)"
     )
+    model = _model_for_type(model_type)
     last_err = None
     for attempt in range(config.OPENAI_RETRIES):
         try:
             resp = await client.chat.completions.create(
-                model=config.OPENAI_MODEL,
+                model=model,
                 messages=[
                     {"role": "system", "content": sys_msg},
                     {"role": "user", "content": prompt},
@@ -42,11 +57,19 @@ async def chatgpt_answer(prompt: str, system: Optional[str] = None, temperature:
     return ""
 
 
-async def ask_gpt_with_typing(bot, chat_id: int, prompt: str, system: Optional[str] = None, temperature: float = config.TEMPERATURE):
+async def ask_gpt_with_typing(
+    bot,
+    chat_id: int,
+    prompt: str,
+    system: Optional[str] = None,
+    temperature: float = config.TEMPERATURE,
+    *,
+    model_type: str = "default",
+):
     """Показывает статус typing и вызывает chatGPT с ретраями."""
     try:
         if bot and chat_id:
             await bot.send_chat_action(chat_id=chat_id, action="typing")
     except Exception:
         pass
-    return await chatgpt_answer(prompt, system=system, temperature=temperature)
+    return await chatgpt_answer(prompt, system=system, temperature=temperature, model_type=model_type)
