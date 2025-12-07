@@ -10,200 +10,62 @@ import asyncio
 import json
 import math
 import traceback
-import asyncio
 import contextlib
-from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Awaitable
+from typing import Any, Awaitable, Dict, List, Optional
 
-from dotenv import load_dotenv
 import pandas as pd
 
 from telegram import (
     Update,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton,
-    InputFile
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InputFile,
 )
-from telegram.constants import ParseMode, ChatAction
+from telegram.constants import ParseMode
 from telegram.ext import (
-    ApplicationBuilder, ContextTypes,
-    CommandHandler, MessageHandler, CallbackQueryHandler, filters
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
 )
 
-# ---- OpenAI SDK
-from openai import AsyncOpenAI
-
-import datetime
-
-LOG_FILE = "logs.jsonl"
-
-def log_event(user_id: int, user_message: str, bot_answer: str, stage: str = ""):
-    """Записывает событие в JSONL файл."""
-    try:
-        record = {
-            "timestamp": datetime.datetime.utcnow().isoformat(),
-            "user_id": user_id,
-            "stage": stage,
-            "user_message": user_message,
-            "bot_answer": bot_answer,
-        }
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception as e:
-        print("LOGGING ERROR:", e)
+from ai_marketer import config
+from ai_marketer.gpt_client import ask_gpt_with_typing, chatgpt_answer
+from ai_marketer.keyboards import (
+    AI_MARKETER_MENU,
+    CONTENT_MENU,
+    INLINE_COMP_MENU,
+    INLINE_CONTACT,
+    INLINE_GROWTH_MENU,
+    INLINE_START_DIAG,
+    MAIN_MENU,
+    SERVICES_MENU,
+    aux_menu,
+    back_main_buttons,
+    report_menu,
+)
+from ai_marketer.logging_utils import log_event
+from ai_marketer.payments import build_service_payment
+from ai_marketer.state import UserState, get_state, reset_state
 
 # ------------------------------
 # 🔧 ИНИЦИАЛИЗАЦИЯ
 # ------------------------------
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-
-if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
-    raise RuntimeError("Не заданы TELEGRAM_TOKEN / OPENAI_API_KEY в .env")
-
-client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+TELEGRAM_TOKEN = config.TELEGRAM_TOKEN
+BOT_NAME = config.BOT_NAME
+OPENAI_MODEL = config.OPENAI_MODEL
+TEMPERATURE = config.TEMPERATURE
+OPENAI_RETRIES = config.OPENAI_RETRIES
+SERVICES_TEXT = config.SERVICES_TEXT
 
 # ------------------------------
 # 🧩 КОНСТАНТЫ И ВСПОМОГАТЕЛЬНОЕ
 # ------------------------------
 
-BOT_NAME = "AI-маркетолог 360°"
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1")
-TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
-OPENAI_RETRIES = 3
-
-MAIN_MENU = ReplyKeyboardMarkup([
-    ["🧭 Диагностика бизнеса"],
-    ["🧬AI-Маркетолог", "☄️Генерация контента"],
-    ["🛠 Услуги"],
-    ["📞 Связаться с командой", "💬 Поддержка"]
-], resize_keyboard=True)
-
-# Кнопки быстрых внутренних веток (вставляем по контексту)
-def aux_menu():
-    return ReplyKeyboardMarkup([
-        ["💡 Как я могу помочь твоему бизнесу"],
-        ["📊 Показать стратегию роста", "🧠 AI-инструменты для компании"],
-        ["🧾 Мои цифры и анализ"],
-        ["⬅️ В главное меню"]
-    ], resize_keyboard=True)
-
-def back_main_buttons():
-    return ReplyKeyboardMarkup([["⬅️ В главное меню"]], resize_keyboard=True)
-
-def report_menu():
-    return ReplyKeyboardMarkup([
-        ["Продукт 📦", "Целевая аудитория 🎯"],
-        ["Продажи 💰", "Маркетинг 📣"],
-        ["Команда 👥", "Конкуренты ⚔️"],
-        ["Цифры и аналитика 📊", "Приоритеты ⚡️"],
-        ["Сохранить отчёт PDF 📁", "⬅️ В главное меню"]
-    ], resize_keyboard=True)
-
-# Подменю: AI-Маркетолог
-AI_MARKETER_MENU = ReplyKeyboardMarkup([
-    ["📊 Провести анализ компании", "💡 Составить стратегию"],
-    ["🧩 Создать контент-план", "📈 Подобрать каналы трафика"],
-    ["⚙️ Внедрить AI для автоматизации"],
-    ["⬅️ В главное меню"]
-], resize_keyboard=True)
-
-# Подменю: Генерация контента
-CONTENT_MENU = ReplyKeyboardMarkup([
-    ["Создать изображение 🔒️"],
-    ["Создать Reels/Shorts 🔒️", "Создать Видео до 3 минут 🔒️"],
-    ["Создать презентацию 🔒️"],
-    ["⬅️ В главное меню"]
-], resize_keyboard=True)
-
-SERVICES = [
-    ("AI маркетолог", "2500/мес", "ai_marketer"),
-    ("Пакет на генерацию 25 изображений", "2500 руб", "img_25"),
-    ("Пакет на генерацию 50 изображений", "5000 руб", "img_50"),
-    ("Пакет на генерацию Reels/Shorts до 1 мин 10 шт", "2500 руб", "reels_10"),
-    ("Пакет 10 шт. на генерацию видео до 3 мин с Аватаром", "2500 руб", "video_avatar_10"),
-    ("Пакет на генерацию презентации (до 20 слайдов)", "1000 руб/преза", "presentation"),
-]
-
-SERVICES_MENU = InlineKeyboardMarkup([
-    [InlineKeyboardButton(f"Купить: {name}", callback_data=f"buy_service_{code}")]
-    for name, _, code in SERVICES
-])
-
-SERVICES_TEXT = (
-    "Выбери услугу:\n"
-    + "\n".join([f"• {name} — {price}" for name, price, _ in SERVICES])
-    + "\n\nКнопки покупки пока без оплаты — сервис подключим позже."
-)
-
-INLINE_CONTACT = InlineKeyboardMarkup([
-    [InlineKeyboardButton("Написать в Telegram менеджеру", url="https://t.me/maglena_a")]
-])
-
-INLINE_START_DIAG = InlineKeyboardMarkup([
-    [InlineKeyboardButton("НАЧАТЬ ДИАГНОСТИКУ 🚀", callback_data="start_diag")]
-])
-
-INLINE_COMP_MENU = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("Цены и позиционирование 💰", callback_data="comp_prices"),
-        InlineKeyboardButton("Контент и продвижение 📣", callback_data="comp_content")
-    ],
-    [
-        InlineKeyboardButton("Продукт и предложения ⚙️", callback_data="comp_product"),
-        InlineKeyboardButton("Всё вместе 🧠", callback_data="comp_all")
-    ],
-    [InlineKeyboardButton("⏪ Назад", callback_data="comp_back")]
-])
-
-INLINE_GROWTH_MENU = InlineKeyboardMarkup([
-    [InlineKeyboardButton("Получить отчёт 📊", callback_data="get_report")],
-    [InlineKeyboardButton("Да, шаг за шагом 🚀", callback_data="plan_30d")],
-    [InlineKeyboardButton("Получить аудит конкурентов 🕵️", callback_data="comp_all")]
-])
-
-# ------------------------------
-# 🧠 ВЫЗОВ ChatGPT С РЕТРАЯМИ
-# ------------------------------
-async def chatgpt_answer(prompt: str, system: str = None, temperature: float = TEMPERATURE) -> str:
-    sys_msg = system or "Ты — AI-маркетолог 360° в России в 2025 году, эксперт по стратегиям роста бизнеса, аналитике и автоматизации. Отвечай чётко, по делу. Анализируй существующую информацию на данный момент по законам РФ и стратегиям, используемых в РФ и отвечай с их пониманием. Укладывай свой ответ в 4096 символов (русских символов, кириллица)"
-    last_err = None
-    for attempt in range(OPENAI_RETRIES):
-        try:
-            resp = await client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": sys_msg},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
-            )
-            answer = (resp.choices[0].message.content or "").strip()
-            # логирование
-            log_event(
-                user_id=0,  # потом заменим на реальный ID в текстовом роутере
-                user_message=prompt,
-                bot_answer=answer,
-                stage="chatgpt_core"
-            )
-            return answer
-
-        except Exception as e:
-            last_err = e
-            await asyncio.sleep(0.8 * (attempt + 1))
-    raise last_err
-
-
-async def ask_gpt_with_typing(bot, chat_id: int, prompt: str, system: str = None, temperature: float = TEMPERATURE):
-    """Показывает статус typing и вызывает chatGPT с ретраями."""
-    try:
-        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-    except Exception:
-        pass
-
-    answer = await chatgpt_answer(prompt, system=system, temperature=temperature)
-    return answer
 
 def sanitize(text: str, max_len: int = 3500) -> str:
     if not text:
@@ -307,27 +169,6 @@ async def send_split_text(message_obj, text: str, *, parse_mode=None, disable_pr
 # ------------------------------
 # 🗂️ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ
 # ------------------------------
-@dataclass
-class UserState:
-    stage: str = "idle"
-    diagnostic_step: int = 0
-    answers: Dict[str, Any] = field(default_factory=dict)
-    competitors: List[str] = field(default_factory=list)
-    sales_df_summary: Optional[str] = None
-    last_report_text: Optional[str] = None
-    last_report_sections: Dict[str, str] = field(default_factory=dict)
-    chat_mode: bool = False
-    chat_history: List[Dict[str, str]] = field(default_factory=list)
-
-STATE: Dict[int, UserState] = {}  # map user_id -> UserState
-
-def get_state(user_id: int) -> UserState:
-    if user_id not in STATE:
-        STATE[user_id] = UserState()
-    return STATE[user_id]
-
-def reset_state(user_id: int):
-    STATE[user_id] = UserState()
 
 
 BOLTALKA_HINT_TEXT = (
@@ -1045,8 +886,36 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id if update.effective_chat else None
 
     if data.startswith("buy_service_"):
-        await q.answer("Покупка скоро будет доступна")
-        await q.message.reply_text("Покупка этой услуги скоро появится. Если нужно быстрее — напиши менеджеру.", reply_markup=INLINE_CONTACT)
+        service_code = data.replace("buy_service_", "", 1)
+        try:
+            payment_result = build_service_payment(service_code)
+        except Exception as exc:  # noqa: BLE001
+            await q.message.reply_text(
+                "Не получилось создать счёт в ЮKassa. Напиши менеджеру, мы поможем оформить оплату.",
+                reply_markup=INLINE_CONTACT,
+            )
+            log_event(user.id, f"buy:{service_code}", f"yookassa_error:{exc}", stage="payment")
+            return
+
+        if not payment_result:
+            await q.message.reply_text(
+                "Оплата пока не активирована. Напиши менеджеру, чтобы получить счёт или оформить заказ вручную.",
+                reply_markup=INLINE_CONTACT,
+            )
+            return
+
+        payment_url, payment_payload = payment_result
+        payment_keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Оплатить через ЮKassa", url=payment_url)],
+                [InlineKeyboardButton("Написать менеджеру", url="https://t.me/maglena_a")],
+            ]
+        )
+        await q.message.reply_text(
+            "Готово! Ниже ссылка на оплату через ЮKassa. После оплаты лимиты обновятся автоматически.",
+            reply_markup=payment_keyboard,
+        )
+        log_event(user.id, f"buy:{service_code}", json.dumps(payment_payload, ensure_ascii=False), stage="payment")
         return
 
     if data == "start_diag":
