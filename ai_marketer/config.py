@@ -60,6 +60,11 @@ TARIFFS = {
     },
 }
 
+PROMOCODES = {
+    "стеблев": 0.5,
+    "шимин": 0.5,
+}
+
 SERVICES = [
     (f"{data['name']} — {data['display_price']}", data["display_price"], code)
     for code, data in TARIFFS.items()
