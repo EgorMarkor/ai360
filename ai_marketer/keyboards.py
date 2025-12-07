@@ -4,13 +4,13 @@ from telegram import (
     ReplyKeyboardMarkup,
 )
 
-from ai_marketer.config import SERVICES
+from ai_marketer.config import SERVICES, TARIFFS
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [
         ["🧭 Диагностика бизнеса"],
         ["🧬AI-Маркетолог", "☄️Генерация контента"],
-        ["🛠 Услуги"],
+        ["🛠 Услуги", "💳 Оплата и тарифы"],
         ["📞 Связаться с командой", "💬 Поддержка"],
     ],
     resize_keyboard=True,
@@ -59,9 +59,9 @@ AI_MARKETER_MENU = ReplyKeyboardMarkup(
 
 CONTENT_MENU = ReplyKeyboardMarkup(
     [
-        ["Создать изображение 🔒️"],
-        ["Создать Reels/Shorts 🔒️", "Создать Видео до 3 минут 🔒️"],
-        ["Создать презентацию 🔒️"],
+        ["Создать изображение 🖼️"],
+        ["Создать Reels/Shorts 🎬", "Создать видео до 3 минут 🎥"],
+        ["Создать презентацию 📑"],
         ["⬅️ В главное меню"],
     ],
     resize_keyboard=True,
@@ -74,6 +74,33 @@ SERVICES_MENU = InlineKeyboardMarkup(
         for name, _, code in SERVICES
     ]
 )
+
+
+def tariff_buttons() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(f"Старт — {TARIFFS['start']['display_price']}", callback_data="tariff_start")],
+            [
+                InlineKeyboardButton(
+                    f"Маркетинг-про — {TARIFFS['marketing_pro']['display_price']}",
+                    callback_data="tariff_marketing_pro",
+                )
+            ],
+            [InlineKeyboardButton(f"Контент-студия — {TARIFFS['content_studio']['display_price']}", callback_data="tariff_content_studio")],
+            [InlineKeyboardButton(f"Агентство 360 — {TARIFFS['agency']['display_price']}", callback_data="tariff_agency")],
+            [InlineKeyboardButton("ℹ Подробнее о тарифах", callback_data="tariff_more")],
+            [InlineKeyboardButton("⬅ В главное меню", callback_data="tariff_main_menu")],
+        ]
+    )
+
+
+def tariff_details_buttons(code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(f"Оплатить тариф \"{TARIFFS[code]['name']}\"", callback_data=f"tariff_pay_{code}")],
+            [InlineKeyboardButton("⬅ Назад к тарифам", callback_data="tariff_back")],
+        ]
+    )
 
 
 INLINE_CONTACT = InlineKeyboardMarkup(

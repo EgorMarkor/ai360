@@ -11,6 +11,7 @@ import json
 import math
 import traceback
 import contextlib
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Dict, List, Optional
 
 import pandas as pd
@@ -47,6 +48,8 @@ from ai_marketer.keyboards import (
     aux_menu,
     back_main_buttons,
     report_menu,
+    tariff_buttons,
+    tariff_details_buttons,
 )
 from ai_marketer.logging_utils import log_event
 from ai_marketer.payments import build_service_payment
@@ -61,6 +64,7 @@ OPENAI_MODEL = config.OPENAI_MODEL
 TEMPERATURE = config.TEMPERATURE
 OPENAI_RETRIES = config.OPENAI_RETRIES
 SERVICES_TEXT = config.SERVICES_TEXT
+TARIFFS = config.TARIFFS
 
 # ------------------------------
 # 🧩 КОНСТАНТЫ И ВСПОМОГАТЕЛЬНОЕ
@@ -165,6 +169,73 @@ async def send_split_text(message_obj, text: str, *, parse_mode=None, disable_pr
             kwargs["reply_markup"] = reply_markup
         await message_obj.reply_text(chunk, **kwargs)
         await asyncio.sleep(0.4)
+
+
+def tariff_text_intro() -> str:
+    return "Выберите тариф AI маркетолога 360."
+
+
+def tariff_description(code: str) -> str:
+    data = TARIFFS[code]
+    header = f"Тариф «{data['name']}» — {data['display_price']}"
+    if code == "start":
+        bullets = [
+            "Только текстовый ИИ-маркетолог 24/7",
+            "Стратегии, контент-планы, офферы, воронки, тексты постов и рекламы",
+        ]
+    elif code == "marketing_pro":
+        bullets = [
+            "Всё из тарифа \"Старт\"",
+            "До 50 генераций изображений (креативы, обложки, баннеры)",
+        ]
+    elif code == "content_studio":
+        bullets = [
+            "Всё из «Маркетинг-про»",
+            "До 80 генераций изображений",
+            "До 15 видео-сценариев (Reels, Shorts, реклама)",
+            "До 3 презентаций (структура + тексты)",
+        ]
+    else:
+        bullets = [
+            "Всё из «Контент-студия»",
+            "До 200 генераций изображений",
+            "До 60 видео-сценариев",
+            "До 10 презентаций",
+            "Приоритетная поддержка",
+        ]
+    return header + "\n" + "\n".join([f"• {b}" for b in bullets])
+
+
+def tariffs_more_info() -> str:
+    return (
+        "Как работают тарифы и лимиты\n"
+        "• Каждый тариф действует 30 дней с момента оплаты.\n"
+        "• Внутри тарифа есть лимиты на текстовые запросы и генерации (изображения, видео-сценарии, презентации).\n"
+        "• Если вы израсходовали лимиты раньше 30 дней — просто покупаете новый пакет того же тарифа и получаете новые лимиты, а срок продлевается ещё на 30 дней с даты оплаты.\n"
+        "• Если вы не израсходовали лимиты за 30 дней — остатки сгорают. Новый месяц оплачивается по полной стоимости тарифа.\n"
+        "• Прикрепленный файл кнопкой для просмотра к сообщению: Подробнее о тарифах"
+    )
+
+
+def format_success_payment(code: str) -> str:
+    data = TARIFFS[code]
+    expires = datetime.now() + timedelta(days=30)
+    limits = data["limits"]
+    text_limit = limits.get("text", "по тарифу")
+    images_limit = limits.get("images", 0)
+    video_limit = limits.get("video", 0)
+    pres_limit = limits.get("presentations", 0)
+    return (
+        "Оплата прошла успешно ✅\n"
+        f"Тариф: {data['name']}\n"
+        f"Срок действия до: {expires.strftime('%d.%m.%Y')}\n\n"
+        "Доступно:\n"
+        f"• Текстовые запросы: {text_limit}\n"
+        f"• Генерации изображений: {images_limit}\n"
+        f"• Видео-сценарии: {video_limit}\n"
+        f"• Презентации: {pres_limit}\n\n"
+        "Можно начинать работу. Выберите раздел в меню и задайте первую задачу ИИ-маркетологу."
+    )
 
 # ------------------------------
 # 🗂️ СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЯ
@@ -346,6 +417,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Окей, всё сбросил. Что дальше?", reply_markup=MAIN_MENU)
 
 # ------------------------------
+# 💳 ОПЛАТА И ТАРИФЫ
+# ------------------------------
+
+
+async def show_tariffs(message_obj):
+    await message_obj.reply_text(tariff_text_intro(), reply_markup=tariff_buttons())
+
+# ------------------------------
 # 🧭 ОБРАБОТКА ГЛАВНОГО МЕНЮ (ТЕКСТ)
 # ------------------------------
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -372,6 +451,10 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if txt in ("🛠 Услуги", "Услуги"):
         await update.message.reply_text(SERVICES_TEXT, reply_markup=SERVICES_MENU)
+        return
+
+    if txt in ("Оплата", "Оплата и тарифы", "💳 Оплата и тарифы"):
+        await show_tariffs(update.message)
         return
 
     # 1️⃣ Протестировать AI-маркетолога
@@ -502,6 +585,77 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Подменю: Генерация контента
     if txt == "Генерация контента" or txt == "☄️Генерация контента":
         await update.message.reply_text("Что сгенерировать?", reply_markup=CONTENT_MENU)
+        return
+
+    if txt == "Создать изображение 🖼️":
+        st.stage = "gen_image"
+        await update.message.reply_text(
+            "Опиши задачу: продукт/услуга, ЦА, эмоция и стиль. Сгенерирую 4 промпта для нейросети и подписи.",
+            reply_markup=back_main_buttons(),
+        )
+        return
+    if st.stage == "gen_image" and txt not in ("⬅️ В главное меню",):
+        prompt = (
+            "Сформируй 4 промпта для генерации изображений (подходит для DALL·E/Midjourney)."
+            " Формат: промпт на английском, краткое описание на русском, идея CTA."
+            f" Ввод: {txt}"
+        )
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        st.stage = "idle"
+        return
+
+    if txt == "Создать Reels/Shorts 🎬":
+        st.stage = "gen_reels"
+        await update.message.reply_text(
+            "Укажи нишу/продукт и площадку. Дам 5 сценариев Reels/Shorts с хук-строкой и раскадровкой.",
+            reply_markup=back_main_buttons(),
+        )
+        return
+    if st.stage == "gen_reels" and txt not in ("⬅️ В главное меню",):
+        prompt = (
+            "Сгенерируй 5 сценариев Reels/Shorts: хук, 3-4 шага сюжета, финальный CTA, длительность до 35 сек."
+            f" Дано: {txt}"
+        )
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        st.stage = "idle"
+        return
+
+    if txt == "Создать видео до 3 минут 🎥":
+        st.stage = "gen_video"
+        await update.message.reply_text(
+            "Что за продукт и цель ролика? Сценарий будет до 3 минут с репликами и планом съёмок.",
+            reply_markup=back_main_buttons(),
+        )
+        return
+    if st.stage == "gen_video" and txt not in ("⬅️ В главное меню",):
+        prompt = (
+            "Напиши сценарий видео до 3 минут: интро, основной блок в 4-5 сценах, финальный оффер."
+            " Добавь таймкоды, визуальные подсказки и текст ведущего."
+            f" Дано: {txt}"
+        )
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        st.stage = "idle"
+        return
+
+    if txt == "Создать презентацию 📑":
+        st.stage = "gen_presentation"
+        await update.message.reply_text(
+            "Про что презентация и кто аудитория? Дам структуру до 20 слайдов с тезисами.",
+            reply_markup=back_main_buttons(),
+        )
+        return
+    if st.stage == "gen_presentation" and txt not in ("⬅️ В главное меню",):
+        prompt = (
+            "Сделай план презентации до 20 слайдов: заголовок, цель, тезисы, CTA."
+            " Укажи ключевые цифры/офер, предложи визуальные подсказки и спикер-ноты."
+            f" Ввод: {txt}"
+        )
+        ans = await ask_gpt_with_typing(context.bot, chat_id, prompt)
+        await send_gpt_reply(update.message, st, ans, last_user_text=txt)
+        st.stage = "idle"
         return
 
     if txt == "Идеи Reels 🎬":
@@ -884,6 +1038,72 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data
     await q.answer()
     chat_id = update.effective_chat.id if update.effective_chat else None
+
+    if data in ("tariff_back",):
+        await q.message.reply_text(tariff_text_intro(), reply_markup=tariff_buttons())
+        return
+
+    if data == "tariff_main_menu":
+        await q.message.reply_text("Главное меню:", reply_markup=MAIN_MENU)
+        return
+
+    if data == "tariff_more":
+        await send_split_text(q.message, tariffs_more_info(), reply_markup=tariff_buttons())
+        return
+
+    if data.startswith("tariff_") and data.count("_") == 1:
+        code = data.replace("tariff_", "", 1)
+        if code in TARIFFS:
+            await send_split_text(q.message, tariff_description(code), reply_markup=tariff_details_buttons(code))
+            return
+
+    if data.startswith("tariff_pay_"):
+        service_code = data.replace("tariff_pay_", "", 1)
+        try:
+            payment_result = build_service_payment(service_code)
+        except Exception as exc:  # noqa: BLE001
+            await q.message.reply_text(
+                "Не получилось создать счёт в ЮKassa. Напиши менеджеру, мы поможем оформить оплату.",
+                reply_markup=INLINE_CONTACT,
+            )
+            log_event(user.id, f"buy:{service_code}", f"yookassa_error:{exc}", stage="payment")
+            return
+
+        if not payment_result:
+            await q.message.reply_text(
+                "Оплата пока не активирована. Напиши менеджеру, чтобы получить счёт или оформить заказ вручную.",
+                reply_markup=INLINE_CONTACT,
+            )
+            return
+
+        payment_url, payment_payload = payment_result
+        payment_keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("Оплатить через ЮKassa", url=payment_url)],
+                [InlineKeyboardButton("✅ Я оплатил", callback_data=f"tariff_success_{service_code}")],
+                [InlineKeyboardButton("Написать менеджеру", url="https://t.me/maglena_a")],
+            ]
+        )
+        await q.message.reply_text(
+            "Готово! Ниже ссылка на оплату через ЮKassa. После оплаты лимиты обновятся автоматически.",
+            reply_markup=payment_keyboard,
+        )
+        log_event(user.id, f"buy:{service_code}", json.dumps(payment_payload, ensure_ascii=False), stage="payment")
+        return
+
+    if data.startswith("tariff_success_"):
+        code = data.replace("tariff_success_", "", 1)
+        if code in TARIFFS:
+            success_text = format_success_payment(code)
+            success_keyboard = ReplyKeyboardMarkup(
+                [
+                    ["🧬AI-Маркетолог", "☄️Генерация контента"],
+                    ["⬅️ В главное меню"],
+                ],
+                resize_keyboard=True,
+            )
+            await send_split_text(q.message, success_text, reply_markup=success_keyboard, disable_preview=True)
+            return
 
     if data.startswith("buy_service_"):
         service_code = data.replace("buy_service_", "", 1)

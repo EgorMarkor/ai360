@@ -5,14 +5,7 @@ import requests
 
 from ai_marketer import config
 
-SERVICE_AMOUNTS: Dict[str, float] = {
-    "ai_marketer": 2500.0,
-    "img_25": 2500.0,
-    "img_50": 5000.0,
-    "reels_10": 2500.0,
-    "video_avatar_10": 2500.0,
-    "presentation": 1000.0,
-}
+SERVICE_AMOUNTS: Dict[str, float] = {code: data["price"] for code, data in config.TARIFFS.items()}
 
 
 def create_payment(amount: float, description: str, metadata: Optional[Dict[str, str]] = None) -> Optional[Tuple[str, Dict]]:
