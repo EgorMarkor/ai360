@@ -1189,7 +1189,7 @@ async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_split_text(q.message, tariffs_more_info(), reply_markup=tariff_buttons())
         return
 
-    if data.startswith("tariff_") and data.count("_") == 1:
+    if data.startswith("tariff_") and not data.startswith(("tariff_pay_", "tariff_success_")):
         code = data.replace("tariff_", "", 1)
         if code in TARIFFS:
             await send_split_text(q.message, tariff_description(code), reply_markup=tariff_details_buttons(code))
