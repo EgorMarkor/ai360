@@ -35,7 +35,7 @@ from telegram.ext import (
 )
 
 from ai_marketer import config
-from ai_marketer.gpt_client import ask_gpt_with_typing, chatgpt_answer
+from ai_marketer.gpt_client import ask_gpt_with_typing, chatgpt_answer, client
 from ai_marketer.keyboards import (
     AI_MARKETER_MENU,
     CONTENT_MENU,
