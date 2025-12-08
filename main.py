@@ -25,6 +25,7 @@ from telegram import (
     InputFile,
 )
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -179,6 +180,34 @@ async def send_split_text(message_obj, text: str, *, parse_mode=None, disable_pr
             kwargs["reply_markup"] = reply_markup
         await message_obj.reply_text(chunk, **kwargs)
         await asyncio.sleep(0.4)
+
+
+async def safe_reply_text(
+    message_obj,
+    text: str,
+    *,
+    retries: int = 2,
+    retry_delay: float = 1.0,
+    reply_markup=None,
+    parse_mode=None,
+    disable_web_page_preview: bool | None = None,
+):
+    """Send a message with retries on transient Telegram network errors."""
+
+    for attempt in range(retries):
+        try:
+            return await message_obj.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+                disable_web_page_preview=disable_web_page_preview,
+            )
+        except RetryAfter as exc:
+            await asyncio.sleep(exc.retry_after + 0.1)
+        except (TimedOut, NetworkError):
+            if attempt == retries - 1:
+                raise
+            await asyncio.sleep(retry_delay)
 
 
 def tariff_text_intro() -> str:
@@ -1181,11 +1210,15 @@ async def handle_diagnostic_flow(update: Update, context: ContextTypes.DEFAULT_T
     if lower_txt.startswith("позже"):
         st.stage = "idle"
         st.diagnostic_step = 0
-        await update.message.reply_text("Окей, вернёмся позже. Чем ещё помочь?", reply_markup=MAIN_MENU)
+        await safe_reply_text(update.message, "Окей, вернёмся позже. Чем ещё помочь?", reply_markup=MAIN_MENU)
         return
 
     if st.diagnostic_step <= 0:
-        await update.message.reply_text("Чтобы начать диагностику, нажми «Диагностика бизнеса» в главном меню.", reply_markup=MAIN_MENU)
+        await safe_reply_text(
+            update.message,
+            "Чтобы начать диагностику, нажми «Диагностика бизнеса» в главном меню.",
+            reply_markup=MAIN_MENU,
+        )
         st.stage = "idle"
         return
 
@@ -1198,15 +1231,16 @@ async def handle_diagnostic_flow(update: Update, context: ContextTypes.DEFAULT_T
     if st.diagnostic_step < len(DIAG_QUESTIONS):
         key, q = DIAG_QUESTIONS[st.diagnostic_step]
         st.diagnostic_step += 1
-        await update.message.reply_text(q, reply_markup=back_main_buttons())
+        await safe_reply_text(update.message, q, reply_markup=back_main_buttons())
         return
 
     # После основного блока — конкуренты
     if st.diagnostic_step == len(DIAG_QUESTIONS):
         st.diagnostic_step += 1
-        await update.message.reply_text(
+        await safe_reply_text(
+            update.message,
             "🕵️ Теперь пришли 2–5 ссылок на конкурентов (сайты, соцсети, маркетплейсы, Telegram-каналы).\n"
-            "Если не знаешь — напиши «Нет», и я сам подберу аналоги."
+            "Если не знаешь — напиши «Нет», и я сам подберу аналоги.",
         )
         return
 
@@ -1215,9 +1249,9 @@ async def handle_diagnostic_flow(update: Update, context: ContextTypes.DEFAULT_T
         links = re.findall(r'(https?://\S+)', txt)
         if links:
             st.competitors = links[:5]
-            await update.message.reply_text("Принял ссылки конкурентов 🔍", reply_markup=None)
+            await safe_reply_text(update.message, "Принял ссылки конкурентов 🔍", reply_markup=None)
         else:
-            await update.message.reply_text("Хорошо, подберу аналоги сам.")
+            await safe_reply_text(update.message, "Хорошо, подберу аналоги сам.")
         st.diagnostic_step += 1
         # Предложить анализ конкурентов
         await finalize_diagnostic(update, context)
@@ -1236,11 +1270,12 @@ async def finalize_diagnostic(update: Update, context: ContextTypes.DEFAULT_TYPE
     st.stage = "diag_complete"
     st.diagnostic_step = 0
 
-    await update.message.reply_text("Формирую итоговый отчёт и план…")
+    await safe_reply_text(update.message, "Формирую итоговый отчёт и план…")
     report_text = await make_final_report(user, st, bot=context.bot, chat_id=chat_id)
 
     await send_gpt_reply(update.message, st, report_text)
-    await update.message.reply_text(
+    await safe_reply_text(
+        update.message,
         "Нужно углубиться в конкретный блок? Выбери раздел отчёта или просто продолжай диалог.",
         reply_markup=report_menu()
     )
