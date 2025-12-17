@@ -108,7 +108,18 @@ INLINE_CONTACT = InlineKeyboardMarkup(
 )
 
 INLINE_START_DIAG = InlineKeyboardMarkup(
-    [[InlineKeyboardButton("НАЧАТЬ ДИАГНОСТИКУ 🚀", callback_data="start_diag")]]
+    [[InlineKeyboardButton("🚀 НАЧАТЬ ДИАГНОСТИКУ", callback_data="start_diag")]]
+)
+
+INLINE_POST_DIAG = InlineKeyboardMarkup(
+    [
+        [InlineKeyboardButton("🔍 Попробовать демо (бесплатно)", callback_data="diag_demo")],
+        [InlineKeyboardButton("⚡ Сразу к полной версии", callback_data="diag_full")],
+    ]
+)
+
+INLINE_TARIFFS_CTA = InlineKeyboardMarkup(
+    [[InlineKeyboardButton("📊 Посмотреть тарифы", callback_data="tariff_open")]]
 )
 
 INLINE_COMP_MENU = InlineKeyboardMarkup(
